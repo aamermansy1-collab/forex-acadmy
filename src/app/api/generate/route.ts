@@ -7,7 +7,8 @@ import type { GenerateInput } from "@/lib/providers";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 300;
+// Vercel Hobby يحدّ مدة الدالة بـ 60ث — ننزل تحت الحد عشان مايحصلش timeout.
+export const maxDuration = 60;
 
 export async function POST(req: Request): Promise<Response> {
   let body: {
@@ -53,8 +54,9 @@ export async function POST(req: Request): Promise<Response> {
     duration: body.duration,
   };
 
-  // نافذة الانتظار: صور 120ث، فيديو 30ث (الواجهة تستطلع بعدها).
-  const waitSeconds = body.wait_seconds ?? (type === "image" ? 120 : 30);
+  // نافذة الانتظار: صور 50ث (تحت حد Hobby 60ث)، فيديو 25ث.
+  // لو ما اكتملتش في النافذة، ترجع task_id والواجهة تستطلع /api/tasks/[id].
+  const waitSeconds = body.wait_seconds ?? (type === "image" ? 50 : 25);
 
   try {
     const r = await runGeneration({

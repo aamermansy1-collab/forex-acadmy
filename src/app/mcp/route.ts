@@ -12,6 +12,8 @@ import { ensureSchema } from "@/lib/turso";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+// Vercel Hobby يحدّ بـ 60ث؛ أدوات التوليد تستخدم نوافذ انتظار أقل من ذلك.
+export const maxDuration = 60;
 
 // التحقق من توكن الوصول إن ضُبط MCP_ACCESS_TOKEN.
 function checkAuth(req: Request): boolean {
