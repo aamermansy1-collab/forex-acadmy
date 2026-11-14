@@ -3,7 +3,7 @@
 // لوحة الإدارة العربية RTL — ثلاث بطاقات: المفاتيح + المهام + ربط السيرفر.
 // تتجدد تلقائيًا كل 5 ثوانٍ للمهام.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -35,7 +35,11 @@ import {
   XCircle,
   ExternalLink,
   Loader2,
+  Wand2,
+  ImageIcon,
+  VideoIcon,
 } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
 
 // ===== أنواع =====
 interface KeyRow {
@@ -215,6 +219,104 @@ export default function Home() {
     navigator.clipboard.writeText(text).then(() => toast.success(msg));
   };
 
+  // ===== حالة توليد الوسائط المباشر =====
+  const [genType, setGenType] = useState<"image" | "video">("image");
+  const [genPrompt, setGenPrompt] = useState("");
+  const [genAspect, setGenAspect] = useState("1:1");
+  const [genResolution, setGenResolution] = useState("1K");
+  const [genDuration, setGenDuration] = useState(8);
+  const [genAudio, setGenAudio] = useState(true);
+  const [generating, setGenerating] = useState(false);
+  const [genResult, setGenResult] = useState<{
+    isCompleted?: boolean;
+    isProcessing?: boolean;
+    isError?: boolean;
+    progress?: number;
+    urls?: string[];
+    taskId?: string;
+    message?: string;
+  } | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const stopPolling = () => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  };
+  useEffect(() => () => stopPolling(), []);
+
+  const pollTask = (taskId: string) => {
+    stopPolling();
+    pollRef.current = setInterval(async () => {
+      try {
+        const r = await fetch(`/api/tasks/${taskId}`);
+        const d = await r.json();
+        setGenResult({
+          isCompleted: d.isCompleted,
+          isProcessing: d.isProcessing,
+          isError: d.isError,
+          progress: d.progress,
+          urls: d.urls,
+          taskId,
+          message: d.message,
+        });
+        if (d.isCompleted || d.isError) {
+          stopPolling();
+          setGenerating(false);
+          fetchTasks();
+        }
+      } catch {
+        /* ignore */
+      }
+    }, 6000);
+  };
+
+  const generate = async () => {
+    if (!genPrompt.trim()) {
+      toast.error("اكتب وصف الصورة/الفيديو أولًا");
+      return;
+    }
+    setGenerating(true);
+    setGenResult(null);
+    try {
+      const payload: Record<string, unknown> = {
+        type: genType,
+        prompt: genPrompt.trim(),
+        aspect_ratio: genAspect,
+      };
+      if (genType === "image") {
+        payload.resolution = genResolution;
+      } else {
+        payload.resolution = genResolution === "1K" ? "480p" : genResolution === "2K" ? "720p" : "1080p";
+        payload.duration = genDuration;
+        payload.enable_audio = genAudio;
+      }
+      const r = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const d = await r.json();
+      if (!r.ok) {
+        toast.error(d.error || "فشل التوليد");
+        setGenerating(false);
+        return;
+      }
+      setGenResult(d);
+      if (d.isProcessing && d.taskId) {
+        // استطلع حتى الاكتمال.
+        pollTask(d.taskId);
+      } else {
+        setGenerating(false);
+        fetchTasks();
+      }
+    } catch {
+      toast.error("خطأ في الشبكة");
+      setGenerating(false);
+    }
+  };
+
   const mcpUrl = origin ? `${origin}/mcp` : "/mcp";
   const authHeader = health?.authRequired
     ? `, "headers": {"Authorization": "Bearer <MCP_ACCESS_TOKEN>"}`
@@ -263,6 +365,150 @@ export default function Home() {
 
       {/* المحتوى */}
       <main className="mx-auto max-w-7xl w-full px-4 py-6 flex-1">
+        {/* بطاقة توليد الوسائط المباشر */}
+        <Card className="mb-6 border-sky-500/20">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Wand2 className="size-4 text-sky-500" /> توليد وسائط
+            </CardTitle>
+            <CardDescription className="text-xs">
+              ولّد صورة أو فيديو مباشرة من هنا — بدون الحاجة لربط ChatGPT أو أي عميل.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {/* اختيار النوع */}
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                variant={genType === "image" ? "default" : "outline"}
+                className="flex-1 h-10"
+                onClick={() => { setGenType("image"); setGenResolution("1K"); setGenResult(null); stopPolling(); setGenerating(false); }}
+              >
+                <ImageIcon className="size-4" /> صورة
+              </Button>
+              <Button
+                type="button"
+                variant={genType === "video" ? "default" : "outline"}
+                className="flex-1 h-10"
+                onClick={() => { setGenType("video"); setGenResolution("2K"); setGenResult(null); stopPolling(); setGenerating(false); }}
+              >
+                <VideoIcon className="size-4" /> فيديو
+              </Button>
+            </div>
+
+            {/* البرومبت */}
+            <div className="space-y-1">
+              <Label className="text-xs">الوصف (Prompt)</Label>
+              <Textarea
+                value={genPrompt}
+                onChange={(e) => setGenPrompt(e.target.value)}
+                placeholder={genType === "image" ? "مثال: قط أبيض يجلس على نافذة وقت الغروب، إضاءة ناعمة" : "مثال: موجات البحر تضرب الشاطئ وقت الغروب، صوت الموج واضح"}
+                className="text-sm min-h-[80px]"
+                dir="auto"
+              />
+            </div>
+
+            {/* الخيارات */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              <div className="space-y-1">
+                <Label className="text-xs">نسبة العرض</Label>
+                <Select value={genAspect} onValueChange={setGenAspect}>
+                  <SelectTrigger className="h-9 text-sm"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {genType === "image"
+                      ? ["auto","1:1","3:2","2:3","4:3","3:4","16:9","9:16","2:1","1:2"].map((v) => <SelectItem key={v} value={v}>{v}</SelectItem>)
+                      : ["auto","1:1","16:9","9:16","3:2","2:3"].map((v) => <SelectItem key={v} value={v}>{v}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">{genType === "image" ? "الدقة" : "الدقة"}</Label>
+                <Select value={genResolution} onValueChange={setGenResolution}>
+                  <SelectTrigger className="h-9 text-sm"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {genType === "image"
+                      ? ["1K","2K","4K"].map((v) => <SelectItem key={v} value={v}>{v}</SelectItem>)
+                      : ["480p","720p","1080p"].map((v) => <SelectItem key={v} value={v}>{v}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              {genType === "video" && (
+                <div className="space-y-1">
+                  <Label className="text-xs">المدة (ث)</Label>
+                  <Select value={String(genDuration)} onValueChange={(v) => setGenDuration(Number(v))}>
+                    <SelectTrigger className="h-9 text-sm"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {[5, 8, 10, 12, 15].map((v) => <SelectItem key={v} value={String(v)}>{v}ث</SelectItem>)}
+                  </SelectContent>
+                  </Select>
+                </div>
+              )}
+            </div>
+
+            {genType === "video" && (
+              <div className="flex items-center justify-between rounded-lg border p-2.5">
+                <Label className="text-xs">تفعيل الصوت</Label>
+                <Switch checked={genAudio} onCheckedChange={setGenAudio} />
+              </div>
+            )}
+
+            {/* زر التوليد */}
+            <Button onClick={generate} disabled={generating} className="w-full h-10 text-sm">
+              {generating ? (
+                <><Loader2 className="size-4 animate-spin" /> جاري التوليد…</>
+              ) : (
+                <><Wand2 className="size-4" /> توليد {genType === "image" ? "صورة" : "فيديو"}</>
+              )}
+            </Button>
+
+            {/* النتيجة */}
+            {genResult && (
+              <div className="rounded-lg border p-3 space-y-2 bg-muted/20">
+                {/* قيد المعالجة */}
+                {genResult.isProcessing && (
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <Loader2 className="size-3.5 animate-spin" />
+                      قيد المعالجة — التقدم: {genResult.progress || 0}%
+                    </div>
+                    <Progress value={genResult.progress || 0} className="h-1.5" />
+                    <div className="text-[11px] text-muted-foreground">
+                      الفيديو يحتاج دقائق — تابع الشريط أو انتظر ظهور الرابط تلقائيًا.
+                      {genResult.taskId && <span className="font-mono block mt-1" dir="ltr">task_id: {genResult.taskId.slice(0, 12)}…</span>}
+                    </div>
+                  </div>
+                )}
+                {/* مكتمل */}
+                {genResult.isCompleted && genResult.urls && genResult.urls.length > 0 && (
+                  <div className="space-y-2">
+                    {genType === "image" ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={genResult.urls[0]} alt="الناتج" className="w-full rounded-lg border max-h-[28rem] object-contain bg-muted" />
+                    ) : (
+                      <video src={genResult.urls[0]} controls className="w-full rounded-lg border max-h-[28rem] bg-black" />
+                    )}
+                    <div className="flex items-center gap-2">
+                      <a href={genResult.urls[0]} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-sky-600 hover:underline" dir="ltr">
+                        <ExternalLink className="size-3" /> {genResult.urls[0].length > 50 ? genResult.urls[0].slice(0, 50) + "…" : genResult.urls[0]}
+                      </a>
+                      <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => copy(genResult.urls![0], "نُسخ الرابط")}>
+                        <Copy className="size-3" /> نسخ الرابط
+                      </Button>
+                    </div>
+                  </div>
+                )}
+                {/* فشل */}
+                {genResult.isError && (
+                  <div className="flex items-start gap-2 text-xs text-red-600">
+                    <XCircle className="size-4 mt-0.5 shrink-0" />
+                    <span>{genResult.message}</span>
+                  </div>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
         <div className="grid gap-6 lg:grid-cols-3">
           {/* (أ) مدير المفاتيح */}
           <Card className="lg:col-span-1">
